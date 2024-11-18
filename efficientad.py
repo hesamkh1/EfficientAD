@@ -9,16 +9,16 @@ import argparse
 import itertools
 import os
 import random
-import brain
 from tqdm import tqdm
 from common import get_autoencoder, get_pdn_small, get_pdn_medium, \
     ImageFolderWithoutTarget, ImageFolderWithPath, InfiniteDataloader
 from sklearn.metrics import roc_auc_score
+from logger_setup import *
 
 def get_argparse():
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--dataset', default='mvtec_ad',
-                        choices=['mvtec_ad', 'mvtec_loco', 'br35h'])
+                        choices=['mvtec_ad', 'mvtec_loco'])
     parser.add_argument('-s', '--subdataset', default='bottle',
                         help='One of 15 sub-datasets of Mvtec AD or 5' +
                              'sub-datasets of Mvtec LOCO')
@@ -38,7 +38,9 @@ def get_argparse():
                         default='./mvtec_loco_anomaly_detection',
                         help='Downloaded Mvtec LOCO dataset')
     parser.add_argument('-t', '--train_steps', type=int, default=70000)
-    parser.add_argument('--high_var', action='store_true', help='Use high variance mvtec_ad')
+    parser.add_argument('-l', '--log_path',
+                        default='./logs',
+                        help='Path of the logs')
     return parser.parse_args()
 
 # constants
@@ -69,10 +71,19 @@ def main():
 
     config = get_argparse()
 
+    # Set up logging
+    logger = setup_logger(config.log_path)
+    
+    logger.info(f"The outputs are being saved in {config.log_path}")
+    logger.info(f"Data set path: {config.dataset}")
+    logger.info(f"Sub Dataset path: {config.subdataset}")
+
     if config.dataset == 'mvtec_ad':
         dataset_path = config.mvtec_ad_path
     elif config.dataset == 'mvtec_loco':
         dataset_path = config.mvtec_loco_path
+    else:
+        raise Exception('Unknown config.dataset')
 
     pretrain_penalty = True
     if config.imagenet_train_path == 'none':
@@ -86,35 +97,13 @@ def main():
     os.makedirs(train_output_dir)
     os.makedirs(test_output_dir)
 
-    categories = ['bottle', 'cable', 'capsule', 'carpet', 'grid', 'hazelnut', 'leather', 'metal_nut',
-                  'pill', 'screw', 'tile', 'toothbrush', 'transistor', 'wood', 'zipper']
     # load data
-    if config.high_var:
-        full_train_set = []
-        test_set = []
-        for category in categories:
-            full_train_set.append(ImageFolderWithoutTarget(
-                os.path.join(dataset_path, category, 'train'),
-                transform=transforms.Lambda(train_transform)))
-            test_set.append(ImageFolderWithPath(
-                os.path.join(dataset_path, category, 'test')))
-
-        full_train_set = torch.utils.data.ConcatDataset(full_train_set)
-        test_set = torch.utils.data.ConcatDataset(test_set)
-    else:
-        if config.dataset == 'br35h':
-            image_size = 224
-            full_train_set = brain.BrainTrain(transform=transforms.Lambda(train_transform))
-            test_set = brain.BrainTest(None)
-        else:
-            full_train_set = ImageFolderWithoutTarget(
-                os.path.join(dataset_path, config.subdataset, 'train'),
-                transform=transforms.Lambda(train_transform))
-            test_set = ImageFolderWithPath(
-                os.path.join(dataset_path, config.subdataset, 'test'))
-    print('Train set size:', len(full_train_set))
-    print('Test set size:', len(test_set))
-    if config.dataset != 'mvtec_loco':
+    full_train_set = ImageFolderWithoutTarget(
+        os.path.join(dataset_path, config.subdataset, 'train'),
+        transform=transforms.Lambda(train_transform))
+    test_set = ImageFolderWithPath(
+        os.path.join(dataset_path, config.subdataset, 'test'))
+    if config.dataset == 'mvtec_ad':
         # mvtec dataset paper recommend 10% validation set
         train_size = int(0.9 * len(full_train_set))
         validation_size = len(full_train_set) - train_size
@@ -128,7 +117,8 @@ def main():
         validation_set = ImageFolderWithoutTarget(
             os.path.join(dataset_path, config.subdataset, 'validation'),
             transform=transforms.Lambda(train_transform))
-
+    else:
+        raise Exception('Unknown config.dataset')
 
 
     train_loader = DataLoader(train_set, batch_size=1, shuffle=True,
@@ -310,8 +300,7 @@ def test(test_set, teacher, student, autoencoder, teacher_mean, teacher_std,
             file = os.path.join(test_output_dir, defect_class, img_nm + '.tiff')
             tifffile.imwrite(file, map_combined)
 
-        # y_true_image = 0 if defect_class == 'good' else 1
-        y_true_image = target
+        y_true_image = 0 if defect_class == 'good' else 1
         y_score_image = np.max(map_combined)
         y_true.append(y_true_image)
         y_score.append(y_score_image)
