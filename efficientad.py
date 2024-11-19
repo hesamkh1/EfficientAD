@@ -75,8 +75,9 @@ def main():
     logger = setup_logger(config.log_path)
     
     logger.info(f"The outputs are being saved in {config.log_path}")
-    logger.info(f"Data set path: {config.dataset}")
+    logger.info(f"Data set path: {config.mvtec_ad_path}")
     logger.info(f"Sub Dataset path: {config.subdataset}")
+    logger.info(f"number of total iterations: {config.train_steps}")
 
     if config.dataset == 'mvtec_ad':
         dataset_path = config.mvtec_ad_path
@@ -112,6 +113,7 @@ def main():
                                                            [train_size,
                                                             validation_size],
                                                            rng)
+        logger.info(f"training size: {train_size},  validation size: {validation_size}")
     elif config.dataset == 'mvtec_loco':
         train_set = full_train_set
         validation_set = ImageFolderWithoutTarget(
@@ -127,6 +129,9 @@ def main():
     validation_loader = DataLoader(validation_set, batch_size=1)
 
     if pretrain_penalty:
+        logger.info(f"ImageNet Penalty is available at {config.imagenet_train_path}")
+  
+        
         # load pretraining data for penalty
         penalty_transform = transforms.Compose([
             transforms.Resize((2 * image_size, 2 * image_size)),
@@ -143,7 +148,9 @@ def main():
         penalty_loader_infinite = InfiniteDataloader(penalty_loader)
     else:
         penalty_loader_infinite = itertools.repeat(None)
-
+        logger.info("ImageNet Penalty is not available!")
+    
+    logger.info(f"training is based on {config.model_size} model size")
     # create models
     if config.model_size == 'small':
         teacher = get_pdn_small(out_channels)
@@ -166,15 +173,20 @@ def main():
         teacher.cuda()
         student.cuda()
         autoencoder.cuda()
+        logger.info("training is running on GPU!")
 
     teacher_mean, teacher_std = teacher_normalization(teacher, train_loader)
 
+
+    #fix training parameters
     optimizer = torch.optim.Adam(itertools.chain(student.parameters(),
                                                  autoencoder.parameters()),
                                  lr=1e-4, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer, step_size=int(0.95 * config.train_steps), gamma=0.1)
     tqdm_obj = tqdm(range(config.train_steps))
+
+
     for iteration, (image_st, image_ae), image_penalty in zip(
             tqdm_obj, train_loader_infinite, penalty_loader_infinite):
         if on_gpu:
@@ -182,9 +194,11 @@ def main():
             image_ae = image_ae.cuda()
             if image_penalty is not None:
                 image_penalty = image_penalty.cuda()
+
         with torch.no_grad():
             teacher_output_st = teacher(image_st)
             teacher_output_st = (teacher_output_st - teacher_mean) / teacher_std
+
         student_output_st = student(image_st)[:, :out_channels]
         distance_st = (teacher_output_st - student_output_st) ** 2
         d_hard = torch.quantile(distance_st, q=0.999)
@@ -214,19 +228,17 @@ def main():
         scheduler.step()
 
         if iteration % 10 == 0:
-            tqdm_obj.set_description(
-                "Current loss: {:.4f}  ".format(loss_total.item()))
+            tqdm_obj.set_description(f"Current loss: {loss_total.item():.4f}")
+            #logger.info(f"Iteration {iteration}: Loss total: {loss_total.item():.4f}")
 
         if iteration % 1000 == 0:
-            torch.save(teacher, os.path.join(train_output_dir,
-                                             'teacher_tmp.pth'))
-            torch.save(student, os.path.join(train_output_dir,
-                                             'student_tmp.pth'))
-            torch.save(autoencoder, os.path.join(train_output_dir,
-                                                 'autoencoder_tmp.pth'))
+            torch.save(teacher, os.path.join(train_output_dir, 'teacher_tmp.pth'))
+            torch.save(student, os.path.join(train_output_dir, 'student_tmp.pth'))
+            torch.save(autoencoder, os.path.join(train_output_dir, 'autoencoder_tmp.pth'))
+            logger.info(f"Checkpoint saved at iteration {iteration}")
 
         if iteration % 10000 == 0 and iteration > 0:
-            # run intermediate evaluation
+            logger.info("Running intermediate evaluation...")
             teacher.eval()
             student.eval()
             autoencoder.eval()
@@ -242,9 +254,8 @@ def main():
                 teacher_std=teacher_std, q_st_start=q_st_start,
                 q_st_end=q_st_end, q_ae_start=q_ae_start, q_ae_end=q_ae_end,
                 test_output_dir=None, desc='Intermediate inference')
-            print('Intermediate image auc: {:.4f}'.format(auc))
+            logger.info(f"Intermediate AUC at iteration {iteration}: {auc:.4f}")
 
-            # teacher frozen
             teacher.eval()
             student.train()
             autoencoder.train()
@@ -255,8 +266,8 @@ def main():
 
     torch.save(teacher, os.path.join(train_output_dir, 'teacher_final.pth'))
     torch.save(student, os.path.join(train_output_dir, 'student_final.pth'))
-    torch.save(autoencoder, os.path.join(train_output_dir,
-                                         'autoencoder_final.pth'))
+    torch.save(autoencoder, os.path.join(train_output_dir, 'autoencoder_final.pth'))
+    logger.info("Final models saved.")
 
     q_st_start, q_st_end, q_ae_start, q_ae_end = map_normalization(
         validation_loader=validation_loader, teacher=teacher, student=student,
@@ -268,7 +279,8 @@ def main():
         teacher_std=teacher_std, q_st_start=q_st_start, q_st_end=q_st_end,
         q_ae_start=q_ae_start, q_ae_end=q_ae_end,
         test_output_dir=test_output_dir, desc='Final inference')
-    print('Final image auc: {:.4f}'.format(auc))
+    logger.info(f"Final AUC: {auc:.4f}")
+
 
 def test(test_set, teacher, student, autoencoder, teacher_mean, teacher_std,
          q_st_start, q_st_end, q_ae_start, q_ae_end, test_output_dir=None,
