@@ -236,6 +236,7 @@ def main():
             torch.save(student, os.path.join(train_output_dir, 'student_tmp.pth'))
             torch.save(autoencoder, os.path.join(train_output_dir, 'autoencoder_tmp.pth'))
             logger.info(f"Checkpoint saved at iteration {iteration}")
+            logger.info(f"l_total:{loss_total.item():.4f}, l_hard: {loss_hard.item():.4f}, l_ood: {loss_penalty.item():.4f}, l_ae: {loss_ae.item():.4f}, l_stae: {loss_stae.item():.4f}")
 
         if iteration % 10000 == 0 and iteration > 0:
             logger.info("Running intermediate evaluation...")
